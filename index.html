@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>原物料價格即時看板 - 銅與匯率</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #0f172a;
+      --card: #111827;
+      --muted: #9ca3af;
+      --accent: #22d3ee;
+      --accent-2: #a855f7;
+      --text: #e5e7eb;
+      --border: #1f2937;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(circle at 20% 20%, rgba(34,211,238,0.15), transparent 25%),
+                  radial-gradient(circle at 80% 0%, rgba(168,85,247,0.12), transparent 25%),
+                  var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", "Noto Sans TC", system-ui, -apple-system, sans-serif;
+      padding: 24px;
+    }
+    .app { max-width: 1080px; margin: 0 auto; }
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    h1 { margin: 0; font-size: 22px; letter-spacing: 0.5px; }
+    .meta { color: var(--muted); font-size: 14px; line-height: 1.4; }
+    button {
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #0b1021;
+      border: none;
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.1s ease, box-shadow 0.1s ease;
+    }
+    button:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(0,0,0,0.25); }
+    button:active { transform: translateY(0); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+    .card {
+      background: rgba(17,24,39,0.9);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+      backdrop-filter: blur(6px);
+      box-shadow: 0 12px 24px rgba(0,0,0,0.25);
+    }
+    .card.highlight {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px rgba(34,211,238,0.35), 0 16px 32px rgba(0,0,0,0.35);
+    }
+    .label { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+    .value { font-size: 26px; font-weight: 700; letter-spacing: 0.3px; }
+    .small { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .section-title { margin: 18px 0 8px; color: #cbd5e1; font-weight: 700; letter-spacing: 0.2px; }
+    .status { margin-top: 12px; font-size: 14px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+    .dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--accent);
+      animation: pulse 1.8s ease-in-out infinite;
+    }
+    .fallback {
+      color: #f87171;
+      font-weight: 700;
+      margin-left: 6px;
+      font-size: 12px;
+    }
+    @keyframes pulse {
+      0% { transform: scale(0.9); opacity: 0.7; }
+      50% { transform: scale(1.15); opacity: 1; }
+      100% { transform: scale(0.9); opacity: 0.7; }
+    }
+    @media (max-width: 640px) {
+      body { padding: 16px; }
+      h1 { font-size: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div>
+        <h1>原物料價格即時看板</h1>
+        <div class="meta">
+          匯率與銅價優先取自後端 API；失敗改用公開來源；最差顯示示範資料。銅價為公噸 (metric ton) 單位。
+        </div>
+      </div>
+      <button id="refresh-btn" type="button">立即更新</button>
+    </header>
+
+    <div class="section-title">即時匯率（USD 基準，可換算 TWD / GBP / HKD）</div>
+    <div class="grid">
+      <div class="card highlight">
+        <div class="label">美元 USD（基準）<span class="fallback" id="fx-fallback" style="display:none;">(未取得即時，使用示範)</span></div>
+        <div class="value" id="fx-usd">1.0000</div>
+        <div class="small">Base currency</div>
+      </div>
+      <div class="card">
+        <div class="label">新台幣 TWD</div>
+        <div class="value" id="fx-twd">--</div>
+        <div class="small">1 USD = <span id="fx-twd-rate">--</span> TWD</div>
+      </div>
+      <div class="card">
+        <div class="label">英鎊 GBP</div>
+        <div class="value" id="fx-gbp">--</div>
+        <div class="small">1 USD = <span id="fx-gbp-rate">--</span> GBP</div>
+      </div>
+      <div class="card">
+        <div class="label">港幣 HKD</div>
+        <div class="value" id="fx-hkd">--</div>
+        <div class="small">1 USD = <span id="fx-hkd-rate">--</span> HKD</div>
+      </div>
+    </div>
+
+    <div class="section-title">銅價（USD / 公噸）</div>
+    <div class="grid">
+      <div class="card highlight">
+        <div class="label">銅價 USD/公噸<span class="fallback" id="copper-fallback" style="display:none;">(未取得即時，使用示範)</span></div>
+        <div class="value" id="price-usd">--</div>
+        <div class="small">最後更新：<span id="copper-updated">--</span></div>
+      </div>
+      <div class="card">
+        <div class="label">新台幣 TWD</div>
+        <div class="value" id="price-twd">--</div>
+        <div class="small">匯率：<span id="rate-twd">--</span></div>
+      </div>
+      <div class="card">
+        <div class="label">英鎊 GBP</div>
+        <div class="value" id="price-gbp">--</div>
+        <div class="small">匯率：<span id="rate-gbp">--</span></div>
+      </div>
+      <div class="card">
+        <div class="label">港幣 HKD</div>
+        <div class="value" id="price-hkd">--</div>
+        <div class="small">匯率：<span id="rate-hkd">--</span></div>
+      </div>
+    </div>
+
+    <div class="section-title">LME 銅價（USD / 公噸）</div>
+    <div class="grid">
+      <div class="card highlight">
+        <div class="label">LME 銅價 USD/公噸<span class="fallback" id="lme-fallback" style="display:none;">(未取得即時，使用示範)</span></div>
+        <div class="value" id="lme-usd-ton">--</div>
+        <div class="small">更新：<span id="lme-updated">--</span></div>
+      </div>
+      <div class="card">
+        <div class="label">新台幣 TWD</div>
+        <div class="value" id="lme-twd">--</div>
+        <div class="small">匯率：<span id="lme-rate-twd">--</span></div>
+      </div>
+      <div class="card">
+        <div class="label">英鎊 GBP</div>
+        <div class="value" id="lme-gbp">--</div>
+        <div class="small">匯率：<span id="lme-rate-gbp">--</span></div>
+      </div>
+      <div class="card">
+        <div class="label">港幣 HKD</div>
+        <div class="value" id="lme-hkd">--</div>
+        <div class="small">匯率：<span id="lme-rate-hkd">--</span></div>
+      </div>
+    </div>
+
+    <div class="section-title">狀態</div>
+    <div class="card">
+      <div class="label">資訊與狀態</div>
+      <div class="status"><span class="dot"></span><span id="status-text">等待更新中...</span></div>
+      <div class="small" id="fx-updated">匯率更新：--</div>
+      <div class="small">提示：優先後端 API；失敗改用公開資料；最後用示範資料避免空白。</div>
+      <div class="small">匯率：<span id="status-fx">--</span></div>
+      <div class="small">銅價：<span id="status-copper">--</span></div>
+      <div class="small">LME 銅價：<span id="status-lme">--</span></div>
+    </div>
+  </div>
+
+  <script>
+    const apiEndpoint = "/api/materials/copper";        // 後端：銅價(USD/公噸或 USD/磅) + 匯率 + 可選 LME
+    const apiLmeEndpoint = "/api/materials/copper/lme"; // 後端 LME：USD/公噸（可選）
+    const copperDirectEndpoint = "https://query1.finance.yahoo.com/v8/finance/chart/HG=F?range=1d&interval=1m";
+    const fxDirectEndpoint = "https://open.er-api.com/v6/latest/USD";
+    const refreshMs = 60_000;
+    const LBS_PER_METRIC_TON = 2204.62262;
+
+    const demoPayload = {
+      usdPerPound: 5.4,
+      usdPerTonne: 5.4 * LBS_PER_METRIC_TON,
+      updatedAt: new Date(),
+      fxRates: { USD: 1, TWD: 31.5, HKD: 7.8, GBP: 0.79 },
+      fxUpdatedAt: new Date(),
+      lmeUsdPerTonne: 11730.0,
+      lmeUpdatedAt: new Date(),
+    };
+
+    const dom = {
+      fxUsd: document.getElementById("fx-usd"),
+      fxTwd: document.getElementById("fx-twd"),
+      fxGbp: document.getElementById("fx-gbp"),
+      fxHkd: document.getElementById("fx-hkd"),
+      fxTwdRate: document.getElementById("fx-twd-rate"),
+      fxGbpRate: document.getElementById("fx-gbp-rate"),
+      fxHkdRate: document.getElementById("fx-hkd-rate"),
+
+      priceUsd: document.getElementById("price-usd"),
+      priceTwd: document.getElementById("price-twd"),
+      priceGbp: document.getElementById("price-gbp"),
+      priceHkd: document.getElementById("price-hkd"),
+      rateTwd: document.getElementById("rate-twd"),
+      rateGbp: document.getElementById("rate-gbp"),
+      rateHkd: document.getElementById("rate-hkd"),
+      copperUpdated: document.getElementById("copper-updated"),
+
+      lmeUsdTon: document.getElementById("lme-usd-ton"),
+      lmeTwd: document.getElementById("lme-twd"),
+      lmeGbp: document.getElementById("lme-gbp"),
+      lmeHkd: document.getElementById("lme-hkd"),
+      lmeRateTwd: document.getElementById("lme-rate-twd"),
+      lmeRateGbp: document.getElementById("lme-rate-gbp"),
+      lmeRateHkd: document.getElementById("lme-rate-hkd"),
+      lmeUpdated: document.getElementById("lme-updated"),
+
+      fxUpdated: document.getElementById("fx-updated"),
+      status: document.getElementById("status-text"),
+      refreshBtn: document.getElementById("refresh-btn"),
+
+      badgeFx: document.getElementById("fx-fallback"),
+      badgeCopper: document.getElementById("copper-fallback"),
+      badgeLme: document.getElementById("lme-fallback"),
+
+      statusFx: document.getElementById("status-fx"),
+      statusCopper: document.getElementById("status-copper"),
+      statusLme: document.getElementById("status-lme"),
+    };
+
+    const fmtCurrency = (value, currency, digits = 2) =>
+      new Intl.NumberFormat("zh-TW", {
+        style: "currency",
+        currency,
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits,
+      }).format(value);
+
+    const fmtNumber = (value, digits = 4) =>
+      new Intl.NumberFormat("en-US", {
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits,
+      }).format(value);
+
+    function setStatus(text) { dom.status.textContent = text; }
+
+    function setFallbackBadges({ fx, copper, lme }) {
+      dom.badgeFx.style.display = fx ? "inline" : "none";
+      dom.badgeCopper.style.display = copper ? "inline" : "none";
+      dom.badgeLme.style.display = lme ? "inline" : "none";
+    }
+
+    function setAvailability({ fxOk, copperOk, lmeOk }) {
+      dom.statusFx.textContent = fxOk ? "有成功取得" : "沒有取得";
+      dom.statusCopper.textContent = copperOk ? "有成功取得" : "沒有取得";
+      dom.statusLme.textContent = lmeOk ? "有成功取得" : "沒有取得";
+    }
+
+    function normalizePayload(data) {
+      const usdPerPound = data?.price?.usdPerPound ?? data?.price?.usd ?? data?.usdPerPound;
+      const usdPerTonne =
+        data?.price?.usdPerTonne ??
+        data?.price?.usd_ton ??
+        data?.usdPerTonne ??
+        (typeof usdPerPound === "number" ? usdPerPound * LBS_PER_METRIC_TON : undefined);
+      if (typeof usdPerTonne !== "number") throw new Error("缺少銅價數值 (USD/公噸)");
+
+      const updatedAt = new Date(data?.updatedAt || Date.now());
+      const fxRates = data?.fx?.rates || data?.rates || {};
+      const fxUpdatedAt = new Date(data?.fx?.updatedAt || data?.fxUpdatedAt || updatedAt);
+      const lmeUsdPerTonne = data?.lme?.usdPerTonne ?? data?.lmeUsdPerTonne;
+      const lmeUpdatedAt = data?.lme?.updatedAt
+        ? new Date(data.lme.updatedAt)
+        : data?.lmeUpdatedAt
+          ? new Date(data.lmeUpdatedAt)
+          : undefined;
+
+      return { usdPerPound, usdPerTonne, updatedAt, fxRates, fxUpdatedAt, lmeUsdPerTonne, lmeUpdatedAt };
+    }
+
+    async function fetchBackendData() {
+      const res = await fetch(apiEndpoint, { cache: "no-store" });
+      if (!res.ok) throw new Error(`後端 API 讀取失敗，HTTP ${res.status}`);
+      const data = await res.json();
+      return normalizePayload(data);
+    }
+
+    async function fetchLmeBackend() {
+      const res = await fetch(apiLmeEndpoint, { cache: "no-store" });
+      if (!res.ok) throw new Error(`後端 LME API 讀取失敗，HTTP ${res.status}`);
+      const data = await res.json();
+      const usdPerTonne = data?.lme?.usdPerTonne ?? data?.usdPerTonne ?? data?.price?.usdPerTonne;
+      if (typeof usdPerTonne !== "number") throw new Error("LME 回應缺少 usdPerTonne");
+      const updatedAt = data?.lme?.updatedAt || data?.updatedAt || Date.now();
+      return { lmeUsdPerTonne: usdPerTonne, lmeUpdatedAt: new Date(updatedAt) };
+    }
+
+    async function fetchCopperDirect() {
+      const res = await fetch(copperDirectEndpoint, { cache: "no-store" });
+      if (!res.ok) throw new Error(`銅價公開來源失敗，HTTP ${res.status}`);
+      const data = await res.json();
+      const result = data?.chart?.result?.[0];
+      if (!result) throw new Error("無法解析公開銅價資料");
+      const closes = result.indicators?.quote?.[0]?.close || [];
+      const lastClose = [...closes].reverse().find(v => typeof v === "number");
+      const price = result?.meta?.regularMarketPrice ?? lastClose;
+      if (typeof price !== "number") throw new Error("公開銅價缺少有效數值");
+      const ts = result?.meta?.regularMarketTime || result?.timestamp?.slice(-1)?.[0] || Date.now() / 1000;
+      return {
+        usdPerPound: price,
+        usdPerTonne: price * LBS_PER_METRIC_TON,
+        updatedAt: new Date(ts * 1000),
+      };
+    }
+
+    async function fetchFxDirect() {
+      const res = await fetch(fxDirectEndpoint, { cache: "no-store" });
+      if (!res.ok) throw new Error(`匯率公開來源失敗，HTTP ${res.status}`);
+      const data = await res.json();
+      // 依照 open.er-api.com 回傳格式解析
+      if (data.result !== "success") throw new Error(data["error-type"] || "匯率公開來源回應異常");
+      const rates = data.rates || {};
+      return {
+        rates: {
+          USD: rates.USD ?? 1,
+          TWD: rates.TWD,
+          HKD: rates.HKD,
+          GBP: rates.GBP,
+        },
+        updatedAt: new Date((data.time_last_update_unix || Date.now() / 1000) * 1000),
+      };
+    }
+
+    function renderFx(fxRates, fxUpdatedAt) {
+      dom.fxUsd.textContent = "1.0000";
+      if (fxRates.TWD) {
+        dom.fxTwd.textContent = fmtNumber(fxRates.TWD, 4);
+        dom.fxTwdRate.textContent = fmtNumber(fxRates.TWD, 4);
+      } else dom.fxTwd.textContent = dom.fxTwdRate.textContent = "--";
+      if (fxRates.GBP) {
+        dom.fxGbp.textContent = fmtNumber(fxRates.GBP, 4);
+        dom.fxGbpRate.textContent = fmtNumber(fxRates.GBP, 4);
+      } else dom.fxGbp.textContent = dom.fxGbpRate.textContent = "--";
+      if (fxRates.HKD) {
+        dom.fxHkd.textContent = fmtNumber(fxRates.HKD, 4);
+        dom.fxHkdRate.textContent = fmtNumber(fxRates.HKD, 4);
+      } else dom.fxHkd.textContent = dom.fxHkdRate.textContent = "--";
+      dom.fxUpdated.textContent = `匯率更新：${fxUpdatedAt ? fxUpdatedAt.toLocaleString("zh-TW") : "--"}`;
+    }
+
+    function renderCopper(payload) {
+      const usdPerTonne = payload.usdPerTonne ?? (payload.usdPerPound ? payload.usdPerPound * LBS_PER_METRIC_TON : undefined);
+      dom.priceUsd.textContent = typeof usdPerTonne === "number" ? fmtCurrency(usdPerTonne, "USD", 2) : "--";
+
+      const setVal = (el, val, currency, digits) => { el.textContent = val != null ? fmtCurrency(val, currency, digits) : "--"; };
+
+      const twd = typeof usdPerTonne === "number" && payload.fxRates.TWD ? usdPerTonne * payload.fxRates.TWD : null;
+      const gbp = typeof usdPerTonne === "number" && payload.fxRates.GBP ? usdPerTonne * payload.fxRates.GBP : null;
+      const hkd = typeof usdPerTonne === "number" && payload.fxRates.HKD ? usdPerTonne * payload.fxRates.HKD : null;
+
+      setVal(dom.priceTwd, twd, "TWD", 0);
+      setVal(dom.priceGbp, gbp, "GBP", 2);
+      setVal(dom.priceHkd, hkd, "HKD", 2);
+
+      dom.rateTwd.textContent = payload.fxRates.TWD ? `1 USD = ${fmtNumber(payload.fxRates.TWD, 4)} TWD` : "--";
+      dom.rateGbp.textContent = payload.fxRates.GBP ? `1 USD = ${fmtNumber(payload.fxRates.GBP, 4)} GBP` : "--";
+      dom.rateHkd.textContent = payload.fxRates.HKD ? `1 USD = ${fmtNumber(payload.fxRates.HKD, 4)} HKD` : "--";
+
+      dom.copperUpdated.textContent = payload.updatedAt ? payload.updatedAt.toLocaleString("zh-TW") : "--";
+    }
+
+    function renderLme(payload) {
+      if (typeof payload.lmeUsdPerTonne === "number") {
+        dom.lmeUsdTon.textContent = fmtCurrency(payload.lmeUsdPerTonne, "USD", 2);
+        dom.lmeTwd.textContent = payload.fxRates.TWD ? fmtCurrency(payload.lmeUsdPerTonne * payload.fxRates.TWD, "TWD", 0) : "--";
+        dom.lmeGbp.textContent = payload.fxRates.GBP ? fmtCurrency(payload.lmeUsdPerTonne * payload.fxRates.GBP, "GBP", 2) : "--";
+        dom.lmeHkd.textContent = payload.fxRates.HKD ? fmtCurrency(payload.lmeUsdPerTonne * payload.fxRates.HKD, "HKD", 2) : "--";
+
+        dom.lmeRateTwd.textContent = payload.fxRates.TWD ? `1 USD = ${fmtNumber(payload.fxRates.TWD, 4)} TWD` : "--";
+        dom.lmeRateGbp.textContent = payload.fxRates.GBP ? `1 USD = ${fmtNumber(payload.fxRates.GBP, 4)} GBP` : "--";
+        dom.lmeRateHkd.textContent = payload.fxRates.HKD ? `1 USD = ${fmtNumber(payload.fxRates.HKD, 4)} HKD` : "--";
+
+        dom.lmeUpdated.textContent = (payload.lmeUpdatedAt || payload.updatedAt)?.toLocaleString("zh-TW") || "--";
+      } else {
+        dom.lmeUsdTon.textContent = dom.lmeTwd.textContent = dom.lmeGbp.textContent = dom.lmeHkd.textContent = "--";
+        dom.lmeRateTwd.textContent = dom.lmeRateGbp.textContent = dom.lmeRateHkd.textContent = "--";
+        dom.lmeUpdated.textContent = "--";
+      }
+    }
+
+    async function refresh() {
+      setStatus("更新中（後端 API）...");
+      dom.refreshBtn.disabled = true;
+      let flags = { fx: false, copper: false, lme: false };
+      let ok = { fxOk: false, copperOk: false, lmeOk: false };
+      try {
+        try {
+          const payload = await fetchBackendData();
+          // 若後端未提供完整匯率，補抓 open.er-api 即時匯率
+          const needFx = !payload.fxRates || !payload.fxRates.TWD || !payload.fxRates.HKD || !payload.fxRates.GBP;
+          if (needFx) {
+            try {
+              const fxDirect = await fetchFxDirect();
+              payload.fxRates = { ...payload.fxRates, ...fxDirect.rates };
+              payload.fxUpdatedAt = fxDirect.updatedAt;
+            } catch (fxErr) {
+              console.warn("補抓 open.er-api 匯率失敗，沿用後端匯率", fxErr);
+            }
+          }
+
+          if (typeof payload.lmeUsdPerTonne !== "number") {
+            try {
+              const lme = await fetchLmeBackend();
+              Object.assign(payload, lme);
+            } catch (lmeErr) {
+              console.warn("後端 LME API 失敗，略過", lmeErr);
+            }
+          }
+          renderFx(payload.fxRates, payload.fxUpdatedAt);
+          renderCopper(payload);
+          renderLme(payload);
+          setFallbackBadges(flags);
+          ok = {
+            fxOk: !!payload.fxRates && (payload.fxRates.TWD || payload.fxRates.HKD || payload.fxRates.GBP),
+            copperOk: true,
+            lmeOk: typeof payload.lmeUsdPerTonne === "number",
+          };
+          setAvailability(ok);
+          setStatus(`更新完成（後端 API） ${new Date().toLocaleTimeString("zh-TW")}`);
+          return;
+        } catch (errBackend) {
+          console.warn("後端 API 失敗，改用公開來源", errBackend);
+        }
+
+        try {
+          setStatus("後端不可用，改用公開資料來源...");
+          const [copper, fx] = await Promise.all([fetchCopperDirect(), fetchFxDirect()]);
+          const payload = {
+            usdPerPound: copper.usdPerPound,
+            usdPerTonne: copper.usdPerTonne,
+            updatedAt: copper.updatedAt,
+            fxRates: fx.rates,
+            fxUpdatedAt: fx.updatedAt,
+            lmeUsdPerTonne: demoPayload.lmeUsdPerTonne, // 公開來源沒有 LME，用示範值占位
+            lmeUpdatedAt: new Date(),
+          };
+          flags = { fx: false, copper: false, lme: true };
+          renderFx(payload.fxRates, payload.fxUpdatedAt);
+          renderCopper(payload);
+          renderLme(payload);
+          setFallbackBadges(flags);
+          ok = {
+            fxOk: true,
+            copperOk: true,
+            lmeOk: false,
+          };
+          setAvailability(ok);
+          setStatus(`更新完成（公開資料+示範 LME） ${new Date().toLocaleTimeString("zh-TW")}`);
+          return;
+        } catch (errDirect) {
+          console.warn("公開來源失敗，改用示範資料", errDirect);
+        }
+
+        flags = { fx: true, copper: true, lme: true };
+        renderFx(demoPayload.fxRates, demoPayload.fxUpdatedAt);
+        renderCopper(demoPayload);
+        renderLme(demoPayload);
+        setFallbackBadges(flags);
+        ok = { fxOk: false, copperOk: false, lmeOk: false };
+        setAvailability(ok);
+        setStatus("後端與公開來源皆失敗，顯示示範資料");
+      } finally {
+        dom.refreshBtn.disabled = false;
+      }
+    }
+
+    dom.refreshBtn.addEventListener("click", refresh);
+    refresh();
+    setInterval(refresh, refreshMs);
+  </script>
+</body>
+</html>
