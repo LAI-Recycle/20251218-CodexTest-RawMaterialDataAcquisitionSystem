@@ -189,9 +189,13 @@
     const apiEndpoint = "/api/materials/copper";        // 後端：銅價(USD/公噸或 USD/磅) + 匯率 + 可選 LME
     const apiLmeEndpoint = "/api/materials/copper/lme"; // 後端 LME：USD/公噸（可選）
     const copperDirectEndpoint = "https://query1.finance.yahoo.com/v8/finance/chart/HG=F?range=1d&interval=1m";
+    const copperProxyEndpoint = "https://api.allorigins.win/raw?url="; // 公開 proxy，解決 Yahoo Finance 無 CORS 問題
+    const lmeDirectEndpoint = "https://query1.finance.yahoo.com/v8/finance/chart/MCU=F?range=1d&interval=1h"; // LME 銅 3M（USD/公噸）
+    const lmeProxyEndpoint = copperProxyEndpoint; // 同樣走 allorigins proxy
     const fxDirectEndpoint = "https://open.er-api.com/v6/latest/USD";
     const refreshMs = 60_000;
     const LBS_PER_METRIC_TON = 2204.62262;
+    const MAX_PRICE_AGE_MS = 6 * 60 * 60 * 1000; // 價格允許的最大時間差，避免顯示過期價格（6 小時）
 
     const demoPayload = {
       usdPerPound: 5.4,
@@ -271,6 +275,11 @@
       dom.statusLme.textContent = lmeOk ? "有成功取得" : "沒有取得";
     }
 
+    function isFresh(date, maxAgeMs = MAX_PRICE_AGE_MS) {
+      if (!(date instanceof Date) || isNaN(date.getTime())) return false;
+      return Date.now() - date.getTime() <= maxAgeMs;
+    }
+
     function normalizePayload(data) {
       const usdPerPound = data?.price?.usdPerPound ?? data?.price?.usd ?? data?.usdPerPound;
       const usdPerTonne =
@@ -311,9 +320,18 @@
     }
 
     async function fetchCopperDirect() {
-      const res = await fetch(copperDirectEndpoint, { cache: "no-store" });
-      if (!res.ok) throw new Error(`銅價公開來源失敗，HTTP ${res.status}`);
-      const data = await res.json();
+      const proxiedUrl = `${copperProxyEndpoint}${encodeURIComponent(copperDirectEndpoint)}`;
+      let data;
+      try {
+        const res = await fetch(proxiedUrl, { cache: "no-store" });
+        if (!res.ok) throw new Error(`銅價公開來源（proxy）失敗，HTTP ${res.status}`);
+        data = await res.json();
+      } catch (proxyErr) {
+        console.warn("公開銅價 proxy 失敗，改試直接來源", proxyErr);
+        const res = await fetch(copperDirectEndpoint, { cache: "no-store" });
+        if (!res.ok) throw new Error(`銅價公開來源失敗，HTTP ${res.status}`);
+        data = await res.json();
+      }
       const result = data?.chart?.result?.[0];
       if (!result) throw new Error("無法解析公開銅價資料");
       const closes = result.indicators?.quote?.[0]?.close || [];
@@ -321,10 +339,36 @@
       const price = result?.meta?.regularMarketPrice ?? lastClose;
       if (typeof price !== "number") throw new Error("公開銅價缺少有效數值");
       const ts = result?.meta?.regularMarketTime || result?.timestamp?.slice(-1)?.[0] || Date.now() / 1000;
+      const updatedAt = new Date(ts * 1000);
+      if (!isFresh(updatedAt)) throw new Error("公開銅價為過期資料，捨棄");
       return {
         usdPerPound: price,
         usdPerTonne: price * LBS_PER_METRIC_TON,
-        updatedAt: new Date(ts * 1000),
+        updatedAt,
+      };
+    }
+
+    async function fetchLmeDirect() {
+      const proxiedUrl = `${lmeProxyEndpoint}${encodeURIComponent(lmeDirectEndpoint)}`;
+      let data;
+      try {
+        const res = await fetch(proxiedUrl, { cache: "no-store" });
+        if (!res.ok) throw new Error(`LME 公開來源（proxy）失敗，HTTP ${res.status}`);
+        data = await res.json();
+      } catch (proxyErr) {
+        console.warn("LME proxy 失敗，改試直接來源", proxyErr);
+        const res = await fetch(lmeDirectEndpoint, { cache: "no-store" });
+        if (!res.ok) throw new Error(`LME 公開來源失敗，HTTP ${res.status}`);
+        data = await res.json();
+      }
+      const result = data?.chart?.result?.[0];
+      if (!result) throw new Error("無法解析 LME 銅價資料");
+      const price = result?.meta?.regularMarketPrice;
+      if (typeof price !== "number") throw new Error("LME 銅價缺少有效數值");
+      const ts = result?.meta?.regularMarketTime || result?.timestamp?.slice(-1)?.[0] || Date.now() / 1000;
+      return {
+        lmeUsdPerTonne: price, // Yahoo MCU=F 報價為 USD/公噸
+        lmeUpdatedAt: new Date(ts * 1000),
       };
     }
 
@@ -411,6 +455,7 @@
       try {
         try {
           const payload = await fetchBackendData();
+          const backendCopperStale = !isFresh(payload.updatedAt);
           // 若後端未提供完整匯率，補抓 open.er-api 即時匯率
           const needFx = !payload.fxRates || !payload.fxRates.TWD || !payload.fxRates.HKD || !payload.fxRates.GBP;
           if (needFx) {
@@ -423,12 +468,31 @@
             }
           }
 
+          if (backendCopperStale) {
+            try {
+              const directCopper = await fetchCopperDirect();
+              payload.usdPerPound = directCopper.usdPerPound;
+              payload.usdPerTonne = directCopper.usdPerTonne;
+              payload.updatedAt = directCopper.updatedAt;
+              flags.copper = true; // 標記為已使用公開來源覆蓋
+            } catch (staleErr) {
+              console.warn("後端銅價為過期資料，且公開來源補抓失敗", staleErr);
+            }
+          }
+
           if (typeof payload.lmeUsdPerTonne !== "number") {
             try {
               const lme = await fetchLmeBackend();
               Object.assign(payload, lme);
             } catch (lmeErr) {
-              console.warn("後端 LME API 失敗，略過", lmeErr);
+              console.warn("後端 LME API 失敗，嘗試公開來源", lmeErr);
+              try {
+                const lmeDirect = await fetchLmeDirect();
+                Object.assign(payload, lmeDirect);
+                flags.lme = true;
+              } catch (lmeDirectErr) {
+                console.warn("公開 LME 來源也失敗", lmeDirectErr);
+              }
             }
           }
           renderFx(payload.fxRates, payload.fxUpdatedAt);
@@ -449,17 +513,19 @@
 
         try {
           setStatus("後端不可用，改用公開資料來源...");
-          const [copper, fx] = await Promise.all([fetchCopperDirect(), fetchFxDirect()]);
+          const [copper, fx, lmeDirect] = await Promise.allSettled([fetchCopperDirect(), fetchFxDirect(), fetchLmeDirect()]);
+          if (copper.status !== "fulfilled") throw copper.reason;
+          if (fx.status !== "fulfilled") throw fx.reason;
           const payload = {
-            usdPerPound: copper.usdPerPound,
-            usdPerTonne: copper.usdPerTonne,
-            updatedAt: copper.updatedAt,
-            fxRates: fx.rates,
-            fxUpdatedAt: fx.updatedAt,
-            lmeUsdPerTonne: demoPayload.lmeUsdPerTonne, // 公開來源沒有 LME，用示範值占位
-            lmeUpdatedAt: new Date(),
+            usdPerPound: copper.value.usdPerPound,
+            usdPerTonne: copper.value.usdPerTonne,
+            updatedAt: copper.value.updatedAt,
+            fxRates: fx.value.rates,
+            fxUpdatedAt: fx.value.updatedAt,
+            lmeUsdPerTonne: lmeDirect.status === "fulfilled" ? lmeDirect.value.lmeUsdPerTonne : demoPayload.lmeUsdPerTonne,
+            lmeUpdatedAt: lmeDirect.status === "fulfilled" ? lmeDirect.value.lmeUpdatedAt : new Date(),
           };
-          flags = { fx: false, copper: false, lme: true };
+          flags = { fx: false, copper: false, lme: lmeDirect.status !== "fulfilled" };
           renderFx(payload.fxRates, payload.fxUpdatedAt);
           renderCopper(payload);
           renderLme(payload);
