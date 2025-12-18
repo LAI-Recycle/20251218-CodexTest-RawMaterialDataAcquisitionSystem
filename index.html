@@ -134,6 +134,7 @@
   </style>
 </head>
 <body>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
   <div class="loading-overlay" id="loading-overlay">
     <div class="loading-box">
       <div class="spinner" aria-hidden="true"></div>
@@ -184,6 +185,9 @@
           <div class="change" id="price-change">--</div>
         </div>
         <div class="small">最後更新：<span id="copper-updated">--</span></div>
+        <div style="height:72px; margin-top:4px;">
+          <canvas id="chart-copper" aria-label="銅價走勢" role="img"></canvas>
+        </div>
       </div>
       <div class="card">
         <div class="label">新台幣 TWD</div>
@@ -211,6 +215,9 @@
           <div class="change" id="lme-change">--</div>
         </div>
         <div class="small">更新：<span id="lme-updated">--</span></div>
+        <div style="height:72px; margin-top:4px;">
+          <canvas id="chart-lme" aria-label="LME 銅價走勢" role="img"></canvas>
+        </div>
       </div>
       <div class="card">
         <div class="label">新台幣 TWD</div>
@@ -287,6 +294,7 @@
       rateGbp: document.getElementById("rate-gbp"),
       rateHkd: document.getElementById("rate-hkd"),
       copperUpdated: document.getElementById("copper-updated"),
+      chartCopper: document.getElementById("chart-copper"),
 
       lmeUsdTon: document.getElementById("lme-usd-ton"),
       lmeTwd: document.getElementById("lme-twd"),
@@ -297,6 +305,7 @@
       lmeRateGbp: document.getElementById("lme-rate-gbp"),
       lmeRateHkd: document.getElementById("lme-rate-hkd"),
       lmeUpdated: document.getElementById("lme-updated"),
+      chartLme: document.getElementById("chart-lme"),
 
       fxUpdated: document.getElementById("fx-updated"),
       status: document.getElementById("status-text"),
@@ -376,6 +385,55 @@
       else if (pct < 0) el.classList.add("down");
     }
 
+    function filterLast24Hours(timestamps = [], values = []) {
+      const now = Date.now();
+      const cutoff = now - 24 * 60 * 60 * 1000;
+      const pairs = [];
+      for (let i = 0; i < Math.min(timestamps.length, values.length); i++) {
+        const tsMs = (timestamps[i] ?? 0) * 1000;
+        const val = values[i];
+        if (typeof val === "number" && !isNaN(val) && tsMs >= cutoff) {
+          pairs.push({ t: tsMs, v: val });
+        }
+      }
+      return pairs;
+    }
+
+    const charts = { copper: null, lme: null };
+    function renderSparkline(canvas, key, pairs, color) {
+      if (!canvas) return;
+      if (charts[key]) {
+        charts[key].destroy();
+        charts[key] = null;
+      }
+      if (!pairs || pairs.length < 2) {
+        canvas.style.display = "none";
+        return;
+      }
+      canvas.style.display = "block";
+      const ctx = canvas.getContext("2d");
+      charts[key] = new Chart(ctx, {
+        type: "line",
+        data: {
+          labels: pairs.map(p => new Date(p.t)),
+          datasets: [{
+            data: pairs.map(p => p.v),
+            borderColor: color,
+            borderWidth: 2,
+            pointRadius: 0,
+            tension: 0.25,
+            fill: false,
+          }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false }, tooltip: { enabled: false } },
+          scales: { x: { display: false }, y: { display: false } },
+        },
+      });
+    }
+
     function normalizePayload(data) {
       const usdPerPound = data?.price?.usdPerPound ?? data?.price?.usd ?? data?.usdPerPound;
       const usdPerTonne =
@@ -408,6 +466,8 @@
         lmeUpdatedAt,
         changePercent,
         lmeChangePercent,
+        copperHistory: data?.copperHistory,
+        lmeHistory: data?.lmeHistory,
       };
     }
 
@@ -440,11 +500,16 @@
       const updatedAt = new Date(ts * 1000);
       if (!isFresh(updatedAt)) throw new Error("公開銅價為過期資料，捨棄");
       const changePercent = result?.meta?.regularMarketChangePercent;
+      const history = {
+        timestamps: result?.timestamp || [],
+        closes,
+      };
       return {
         usdPerPound: price,
         usdPerTonne: price * LBS_PER_METRIC_TON,
         updatedAt,
         changePercent,
+        copperHistory: history,
       };
     }
 
@@ -458,10 +523,15 @@
       const changePercent = result?.meta?.regularMarketChangePercent;
       const updatedAt = new Date(ts * 1000);
       if (!isFresh(updatedAt)) throw new Error("LME 公開來源為過期資料，捨棄");
+      const history = {
+        timestamps: result?.timestamp || [],
+        closes: result?.indicators?.quote?.[0]?.close || [],
+      };
       return {
         lmeUsdPerTonne: price, // Yahoo MCU=F 報價為 USD/公噸
         lmeUpdatedAt: updatedAt,
         lmeChangePercent: changePercent,
+        lmeHistory: history,
       };
     }
 
@@ -520,6 +590,10 @@
       dom.rateHkd.textContent = payload.fxRates.HKD ? `1 USD = ${fmtNumber(payload.fxRates.HKD, 4)} HKD` : "--";
 
       dom.copperUpdated.textContent = payload.updatedAt ? payload.updatedAt.toLocaleString("zh-TW") : "--";
+      const copperPairs = payload.copperHistory
+        ? filterLast24Hours(payload.copperHistory.timestamps, payload.copperHistory.closes)
+        : [];
+      renderSparkline(dom.chartCopper, "copper", copperPairs, "#22d3ee");
     }
 
     function renderLme(payload) {
@@ -535,11 +609,16 @@
         dom.lmeRateHkd.textContent = payload.fxRates.HKD ? `1 USD = ${fmtNumber(payload.fxRates.HKD, 4)} HKD` : "--";
 
         dom.lmeUpdated.textContent = (payload.lmeUpdatedAt || payload.updatedAt)?.toLocaleString("zh-TW") || "--";
+        const lmePairs = payload.lmeHistory
+          ? filterLast24Hours(payload.lmeHistory.timestamps, payload.lmeHistory.closes)
+          : [];
+        renderSparkline(dom.chartLme, "lme", lmePairs, "#a855f7");
       } else {
         dom.lmeUsdTon.textContent = dom.lmeTwd.textContent = dom.lmeGbp.textContent = dom.lmeHkd.textContent = "--";
         dom.lmeRateTwd.textContent = dom.lmeRateGbp.textContent = dom.lmeRateHkd.textContent = "--";
         dom.lmeUpdated.textContent = "--";
         renderChange(dom.lmeChange, undefined);
+        renderSparkline(dom.chartLme, "lme", [], "#a855f7");
       }
     }
 
@@ -577,6 +656,7 @@
                 payload.usdPerTonne = directCopper.usdPerTonne;
                 payload.updatedAt = directCopper.updatedAt;
                 payload.changePercent = directCopper.changePercent;
+                payload.copperHistory = directCopper.copperHistory;
                 flags.copper = true; // 標記為已使用公開來源覆蓋
               } catch (staleErr) {
                 console.warn("後端銅價為過期資料，且公開來源補抓失敗", staleErr);
@@ -585,25 +665,24 @@
 
             if (typeof payload.lmeUsdPerTonne !== "number") {
               try {
-                const lme = await fetchLmeBackend();
-                Object.assign(payload, lme);
-              } catch (lmeErr) {
-                console.warn("後端 LME API 失敗，嘗試公開來源", lmeErr);
-                try {
-                  const lmeDirect = await fetchLmeDirect();
-                  Object.assign(payload, lmeDirect);
-                  payload.lmeChangePercent = lmeDirect.lmeChangePercent;
-                  flags.lme = true;
-                } catch (lmeDirectErr) {
-                  console.warn("公開 LME 來源也失敗", lmeDirectErr);
-                }
-              }
-            } else if (backendLmeStale) {
+              const lme = await fetchLmeBackend();
+              Object.assign(payload, lme);
+            } catch (lmeErr) {
+              console.warn("後端 LME API 失敗，嘗試公開來源", lmeErr);
               try {
                 const lmeDirect = await fetchLmeDirect();
                 Object.assign(payload, lmeDirect);
                 flags.lme = true;
-              } catch (staleLmeErr) {
+              } catch (lmeDirectErr) {
+                console.warn("公開 LME 來源也失敗", lmeDirectErr);
+              }
+            }
+            } else if (backendLmeStale) {
+            try {
+              const lmeDirect = await fetchLmeDirect();
+              Object.assign(payload, lmeDirect);
+              flags.lme = true;
+            } catch (staleLmeErr) {
                 console.warn("後端 LME 為過期資料，公開來源也失敗", staleLmeErr);
               }
             }
@@ -634,11 +713,13 @@
             usdPerTonne: copper.value.usdPerTonne,
             updatedAt: copper.value.updatedAt,
             changePercent: copper.value.changePercent,
+            copperHistory: copper.value.copperHistory,
             fxRates: fx.value.rates,
             fxUpdatedAt: fx.value.updatedAt,
             lmeUsdPerTonne: lmeDirect.status === "fulfilled" ? lmeDirect.value.lmeUsdPerTonne : demoPayload.lmeUsdPerTonne,
             lmeUpdatedAt: lmeDirect.status === "fulfilled" ? lmeDirect.value.lmeUpdatedAt : new Date(),
             lmeChangePercent: lmeDirect.status === "fulfilled" ? lmeDirect.value.lmeChangePercent : undefined,
+            lmeHistory: lmeDirect.status === "fulfilled" ? lmeDirect.value.lmeHistory : undefined,
           };
           flags = { fx: false, copper: false, lme: lmeDirect.status !== "fulfilled" };
           renderFx(payload.fxRates, payload.fxUpdatedAt);
