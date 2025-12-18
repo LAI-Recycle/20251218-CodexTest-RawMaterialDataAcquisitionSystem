@@ -62,8 +62,52 @@
       border-color: var(--accent);
       box-shadow: 0 0 0 1px rgba(34,211,238,0.35), 0 16px 32px rgba(0,0,0,0.35);
     }
+    .loading-overlay {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.35);
+      backdrop-filter: blur(2px);
+      z-index: 999;
+    }
+    .loading-box {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 18px;
+      border-radius: 12px;
+      background: rgba(17,24,39,0.92);
+      border: 1px solid var(--border);
+      box-shadow: 0 16px 32px rgba(0,0,0,0.35);
+    }
+    .spinner {
+      width: 28px;
+      height: 28px;
+      border: 3px solid var(--accent);
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .value-row {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
     .label { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
     .value { font-size: 26px; font-weight: 700; letter-spacing: 0.3px; }
+    .change {
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.2px;
+    }
+    .change.up { color: #ef4444; }   /* 紅漲 */
+    .change.down { color: #22c55e; } /* 綠跌 */
     .small { color: var(--muted); font-size: 12px; margin-top: 4px; }
     .section-title { margin: 18px 0 8px; color: #cbd5e1; font-weight: 700; letter-spacing: 0.2px; }
     .status { margin-top: 12px; font-size: 14px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
@@ -90,6 +134,12 @@
   </style>
 </head>
 <body>
+  <div class="loading-overlay" id="loading-overlay">
+    <div class="loading-box">
+      <div class="spinner" aria-hidden="true"></div>
+      <div>資料載入中，請稍候...</div>
+    </div>
+  </div>
   <div class="app">
     <header>
       <div>
@@ -129,7 +179,10 @@
     <div class="grid">
       <div class="card highlight">
         <div class="label">銅價 USD/公噸<span class="fallback" id="copper-fallback" style="display:none;">(未取得即時，使用示範)</span></div>
-        <div class="value" id="price-usd">--</div>
+        <div class="value-row">
+          <div class="value" id="price-usd">--</div>
+          <div class="change" id="price-change">--</div>
+        </div>
         <div class="small">最後更新：<span id="copper-updated">--</span></div>
       </div>
       <div class="card">
@@ -153,7 +206,10 @@
     <div class="grid">
       <div class="card highlight">
         <div class="label">LME 銅價 USD/公噸<span class="fallback" id="lme-fallback" style="display:none;">(未取得即時，使用示範)</span></div>
-        <div class="value" id="lme-usd-ton">--</div>
+        <div class="value-row">
+          <div class="value" id="lme-usd-ton">--</div>
+          <div class="change" id="lme-change">--</div>
+        </div>
         <div class="small">更新：<span id="lme-updated">--</span></div>
       </div>
       <div class="card">
@@ -205,6 +261,8 @@
       fxUpdatedAt: new Date(),
       lmeUsdPerTonne: 11730.0,
       lmeUpdatedAt: new Date(),
+      changePercent: 0.85,
+      lmeChangePercent: -0.35,
     };
 
     const dom = {
@@ -220,6 +278,7 @@
       priceTwd: document.getElementById("price-twd"),
       priceGbp: document.getElementById("price-gbp"),
       priceHkd: document.getElementById("price-hkd"),
+      priceChange: document.getElementById("price-change"),
       rateTwd: document.getElementById("rate-twd"),
       rateGbp: document.getElementById("rate-gbp"),
       rateHkd: document.getElementById("rate-hkd"),
@@ -229,6 +288,7 @@
       lmeTwd: document.getElementById("lme-twd"),
       lmeGbp: document.getElementById("lme-gbp"),
       lmeHkd: document.getElementById("lme-hkd"),
+      lmeChange: document.getElementById("lme-change"),
       lmeRateTwd: document.getElementById("lme-rate-twd"),
       lmeRateGbp: document.getElementById("lme-rate-gbp"),
       lmeRateHkd: document.getElementById("lme-rate-hkd"),
@@ -237,6 +297,7 @@
       fxUpdated: document.getElementById("fx-updated"),
       status: document.getElementById("status-text"),
       refreshBtn: document.getElementById("refresh-btn"),
+      loading: document.getElementById("loading-overlay"),
 
       badgeFx: document.getElementById("fx-fallback"),
       badgeCopper: document.getElementById("copper-fallback"),
@@ -280,6 +341,19 @@
       return Date.now() - date.getTime() <= maxAgeMs;
     }
 
+    function renderChange(el, pct) {
+      el.className = "change";
+      if (typeof pct !== "number" || isNaN(pct)) {
+        el.textContent = "--";
+        return;
+      }
+      const arrow = pct > 0 ? "▲" : pct < 0 ? "▼" : "";
+      const sign = pct > 0 ? "+" : "";
+      el.textContent = `${arrow ? arrow + " " : ""}${sign}${pct.toFixed(2)}%`;
+      if (pct > 0) el.classList.add("up");
+      else if (pct < 0) el.classList.add("down");
+    }
+
     function normalizePayload(data) {
       const usdPerPound = data?.price?.usdPerPound ?? data?.price?.usd ?? data?.usdPerPound;
       const usdPerTonne =
@@ -299,7 +373,20 @@
           ? new Date(data.lmeUpdatedAt)
           : undefined;
 
-      return { usdPerPound, usdPerTonne, updatedAt, fxRates, fxUpdatedAt, lmeUsdPerTonne, lmeUpdatedAt };
+      const changePercent = data?.price?.regularMarketChangePercent ?? data?.price?.changePercent ?? data?.changePercent;
+      const lmeChangePercent = data?.lme?.regularMarketChangePercent ?? data?.lme?.changePercent ?? data?.lmeChangePercent;
+
+      return {
+        usdPerPound,
+        usdPerTonne,
+        updatedAt,
+        fxRates,
+        fxUpdatedAt,
+        lmeUsdPerTonne,
+        lmeUpdatedAt,
+        changePercent,
+        lmeChangePercent,
+      };
     }
 
     async function fetchBackendData() {
@@ -341,10 +428,12 @@
       const ts = result?.meta?.regularMarketTime || result?.timestamp?.slice(-1)?.[0] || Date.now() / 1000;
       const updatedAt = new Date(ts * 1000);
       if (!isFresh(updatedAt)) throw new Error("公開銅價為過期資料，捨棄");
+      const changePercent = result?.meta?.regularMarketChangePercent;
       return {
         usdPerPound: price,
         usdPerTonne: price * LBS_PER_METRIC_TON,
         updatedAt,
+        changePercent,
       };
     }
 
@@ -366,9 +455,13 @@
       const price = result?.meta?.regularMarketPrice;
       if (typeof price !== "number") throw new Error("LME 銅價缺少有效數值");
       const ts = result?.meta?.regularMarketTime || result?.timestamp?.slice(-1)?.[0] || Date.now() / 1000;
+      const changePercent = result?.meta?.regularMarketChangePercent;
+      const updatedAt = new Date(ts * 1000);
+      if (!isFresh(updatedAt)) throw new Error("LME 公開來源為過期資料，捨棄");
       return {
         lmeUsdPerTonne: price, // Yahoo MCU=F 報價為 USD/公噸
-        lmeUpdatedAt: new Date(ts * 1000),
+        lmeUpdatedAt: updatedAt,
+        lmeChangePercent: changePercent,
       };
     }
 
@@ -410,6 +503,7 @@
     function renderCopper(payload) {
       const usdPerTonne = payload.usdPerTonne ?? (payload.usdPerPound ? payload.usdPerPound * LBS_PER_METRIC_TON : undefined);
       dom.priceUsd.textContent = typeof usdPerTonne === "number" ? fmtCurrency(usdPerTonne, "USD", 2) : "--";
+      renderChange(dom.priceChange, payload.changePercent);
 
       const setVal = (el, val, currency, digits) => { el.textContent = val != null ? fmtCurrency(val, currency, digits) : "--"; };
 
@@ -434,6 +528,7 @@
         dom.lmeTwd.textContent = payload.fxRates.TWD ? fmtCurrency(payload.lmeUsdPerTonne * payload.fxRates.TWD, "TWD", 0) : "--";
         dom.lmeGbp.textContent = payload.fxRates.GBP ? fmtCurrency(payload.lmeUsdPerTonne * payload.fxRates.GBP, "GBP", 2) : "--";
         dom.lmeHkd.textContent = payload.fxRates.HKD ? fmtCurrency(payload.lmeUsdPerTonne * payload.fxRates.HKD, "HKD", 2) : "--";
+        renderChange(dom.lmeChange, payload.lmeChangePercent);
 
         dom.lmeRateTwd.textContent = payload.fxRates.TWD ? `1 USD = ${fmtNumber(payload.fxRates.TWD, 4)} TWD` : "--";
         dom.lmeRateGbp.textContent = payload.fxRates.GBP ? `1 USD = ${fmtNumber(payload.fxRates.GBP, 4)} GBP` : "--";
@@ -444,11 +539,13 @@
         dom.lmeUsdTon.textContent = dom.lmeTwd.textContent = dom.lmeGbp.textContent = dom.lmeHkd.textContent = "--";
         dom.lmeRateTwd.textContent = dom.lmeRateGbp.textContent = dom.lmeRateHkd.textContent = "--";
         dom.lmeUpdated.textContent = "--";
+        renderChange(dom.lmeChange, undefined);
       }
     }
 
     async function refresh() {
       setStatus("更新中（後端 API）...");
+      if (dom.loading) dom.loading.style.display = "flex";
       dom.refreshBtn.disabled = true;
       let flags = { fx: false, copper: false, lme: false };
       let ok = { fxOk: false, copperOk: false, lmeOk: false };
@@ -456,6 +553,10 @@
         try {
           const payload = await fetchBackendData();
           const backendCopperStale = !isFresh(payload.updatedAt);
+          const backendLmeStale =
+            typeof payload.lmeUsdPerTonne === "number"
+              ? !isFresh(payload.lmeUpdatedAt || payload.updatedAt)
+              : false;
           // 若後端未提供完整匯率，補抓 open.er-api 即時匯率
           const needFx = !payload.fxRates || !payload.fxRates.TWD || !payload.fxRates.HKD || !payload.fxRates.GBP;
           if (needFx) {
@@ -474,6 +575,7 @@
               payload.usdPerPound = directCopper.usdPerPound;
               payload.usdPerTonne = directCopper.usdPerTonne;
               payload.updatedAt = directCopper.updatedAt;
+              payload.changePercent = directCopper.changePercent;
               flags.copper = true; // 標記為已使用公開來源覆蓋
             } catch (staleErr) {
               console.warn("後端銅價為過期資料，且公開來源補抓失敗", staleErr);
@@ -489,10 +591,19 @@
               try {
                 const lmeDirect = await fetchLmeDirect();
                 Object.assign(payload, lmeDirect);
+                payload.lmeChangePercent = lmeDirect.lmeChangePercent;
                 flags.lme = true;
               } catch (lmeDirectErr) {
                 console.warn("公開 LME 來源也失敗", lmeDirectErr);
               }
+            }
+          } else if (backendLmeStale) {
+            try {
+              const lmeDirect = await fetchLmeDirect();
+              Object.assign(payload, lmeDirect);
+              flags.lme = true;
+            } catch (staleLmeErr) {
+              console.warn("後端 LME 為過期資料，公開來源也失敗", staleLmeErr);
             }
           }
           renderFx(payload.fxRates, payload.fxUpdatedAt);
@@ -502,7 +613,7 @@
           ok = {
             fxOk: !!payload.fxRates && (payload.fxRates.TWD || payload.fxRates.HKD || payload.fxRates.GBP),
             copperOk: true,
-            lmeOk: typeof payload.lmeUsdPerTonne === "number",
+            lmeOk: typeof payload.lmeUsdPerTonne === "number" && isFresh(payload.lmeUpdatedAt || payload.updatedAt),
           };
           setAvailability(ok);
           setStatus(`更新完成（後端 API） ${new Date().toLocaleTimeString("zh-TW")}`);
@@ -520,10 +631,12 @@
             usdPerPound: copper.value.usdPerPound,
             usdPerTonne: copper.value.usdPerTonne,
             updatedAt: copper.value.updatedAt,
+            changePercent: copper.value.changePercent,
             fxRates: fx.value.rates,
             fxUpdatedAt: fx.value.updatedAt,
             lmeUsdPerTonne: lmeDirect.status === "fulfilled" ? lmeDirect.value.lmeUsdPerTonne : demoPayload.lmeUsdPerTonne,
             lmeUpdatedAt: lmeDirect.status === "fulfilled" ? lmeDirect.value.lmeUpdatedAt : new Date(),
+            lmeChangePercent: lmeDirect.status === "fulfilled" ? lmeDirect.value.lmeChangePercent : undefined,
           };
           flags = { fx: false, copper: false, lme: lmeDirect.status !== "fulfilled" };
           renderFx(payload.fxRates, payload.fxUpdatedAt);
@@ -533,7 +646,7 @@
           ok = {
             fxOk: true,
             copperOk: true,
-            lmeOk: false,
+            lmeOk: lmeDirect.status === "fulfilled",
           };
           setAvailability(ok);
           setStatus(`更新完成（公開資料+示範 LME） ${new Date().toLocaleTimeString("zh-TW")}`);
@@ -552,6 +665,7 @@
         setStatus("後端與公開來源皆失敗，顯示示範資料");
       } finally {
         dom.refreshBtn.disabled = false;
+        if (dom.loading) dom.loading.style.display = "none";
       }
     }
 
